@@ -1,155 +1,206 @@
 import numpy as np
 import cv2
 import scipy
+import math
 from scipy.ndimage.filters import gaussian_filter
 
 #Initialize x and y displacement array
 smoothed_x_trajectory = []
 smoothed_y_trajectory = []
-smoothed_a1_trajectory = []
-smoothed_a2_trajectory = []
+smoothed_a_trajectory = []
+smoothed_s_trajectory = []
 x_transformation = []
 y_transformation = []
-a1_transformation = []
-a2_transformation = []
+a_transformation = []
+s_transformation = []
 x_trajectory = []
 y_trajectory = []
-a1_trajectory = []
-a2_trajectory = []
+a_trajectory = []
+s_trajectory = []
 
+# Parameters
+# Shitoma corners params
+feature_params = dict( maxCorners = 200,
+                       qualityLevel = 0.05,
+                       minDistance = 30,
+                       blockSize = 10 )
+# LK Optical params
+lk_params = dict( winSize  = (15,15),
+                  maxLevel = 2,
+                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
+# Video Output
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
 #out_raw = cv2.VideoWriter('output_raw.avi',fourcc, 30.0, (1920,1080))
 out_smooth = cv2.VideoWriter('shaky4_smooth.mp4',fourcc, 30.0, (1920,1080))
+# Video Input
 cap = cv2.VideoCapture('shaky4.mp4')
 
+# Initial frame
 ret, frame1 = cap.read()
+frame1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
 #out_raw.write(frame1)
+# Get video width and height
+width = frame1.shape[1]
+height = frame1.shape[0]
+
+good_frame2 = np.array([])
 
 while(cap.isOpened()):
     ret, frame2_color = cap.read()
-    frame2 = frame2_color
-    if ret == True:
-
-        # Get video width and height
-        width = frame1.shape[1]
-        height = frame1.shape[0]
-
-        # Turn to grayscale
-        frame1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-        frame2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
-
-        #cv2.imshow("image1", frame1)
-        #cv2.imshow("image2", frame2)
-
-        frame1Corner = cv2.goodFeaturesToTrack(frame1, 200, 0.01, 30)
-        #print frame1Corner
-        opticalFlowResult = cv2.calcOpticalFlowPyrLK(frame2, frame1, frame1Corner, None)
-        #print opticalFlowResult[1]
-
-        transResult = cv2.estimateRigidTransform(frame1Corner, opticalFlowResult[0], False)
-
-        #frame2_trans = cv2.warpAffine(frame2, transResult, (width, height))
-        #cv2.imshow("image2", frame2_trans)
-        #cv2.waitKey()
-
-        a1_transformation.append(transResult[0][0])
-        a2_transformation.append(transResult[0][1])
-        x_transformation.append(transResult[0][2])
-        y_transformation.append(transResult[1][2])
-
-        #print transResult
-        print("One frame written.")
-        frame1 = frame2_color
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-    else:
+    if not ret:
+        print "[ERROR] Cannot read more frames."
         break
+
+    # Turn to grayscale
+    frame2 = cv2.cvtColor(frame2_color, cv2.COLOR_BGR2GRAY)
+
+    # Get features to track if not enough
+    if len(good_frame2) < 150:
+        frame1Corner = cv2.goodFeaturesToTrack(frame1, mask = None, **feature_params)
+        #print frame1Corner
+    else:
+        # Reuse previous points
+        frame1Corner = good_frame2.reshape(-1,1,2)
+
+    opticalFlowResult, st, err = cv2.calcOpticalFlowPyrLK(frame1, frame2, frame1Corner, None, **lk_params)
+    #print opticalFlowResult[1]
+    # Use good points only
+    good_frame2 = opticalFlowResult[np.where(st==1)]
+    good_frame1 = frame1Corner[np.where(st==1)]
+
+    transResult = cv2.estimateRigidTransform(good_frame1, good_frame2, False)
+
+    #frame2_trans = cv2.warpAffine(frame2, transResult, (width, height))
+    #cv2.imshow("image2", frame2_trans)
+    #cv2.waitKey()
+
+    #Decompose Transformation
+    # for [a c e]
+    #     [b d f]
+    # e and f is displacement
+    # atan2(b, a) gives the rotation
+    # a = sx * sinA, d = sy * cosA,
+    # Assume sx=sy, then sqrt((a^2 + d^2)/2) gives scales
+    dx = transResult[0,2]
+    dy = transResult[1,2]
+    da = math.atan2(transResult[1,0], transResult[0,0])
+    ds = math.sqrt((math.pow(transResult[0,0],2) + math.pow(transResult[1,1],2)) /2)
+
+    # Push all transformation DOF into array
+    x_transformation.append(dx)
+    y_transformation.append(dy)
+    a_transformation.append(da)
+    s_transformation.append(ds)
+
+    #print transResult
+    print(len(x_transformation), " frames read.")
+
+    #Process to next frame
+    frame1 = frame2
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
 print "x_transformation length = ", len(x_transformation)
 print "y_transformation length = ", len(y_transformation)
 
-print x_transformation
-
 x_trajectory.append(x_transformation[0])
 y_trajectory.append(y_transformation[0])
-a1_trajectory.append(a1_transformation[0])
-a2_trajectory.append(a2_transformation[0])
+a_trajectory.append(a_transformation[0])
+s_trajectory.append(s_transformation[0])
 
 #Accumulate the transformations
 for i in range(1, len(x_transformation)):
     x_trajectory.append(x_transformation[i] + x_trajectory[len(x_trajectory) - 1])
     y_trajectory.append(y_transformation[i] + y_trajectory[len(y_trajectory) - 1])
-    a1_trajectory.append(a1_transformation[i] + a1_trajectory[len(a1_trajectory) - 1])
-    a2_trajectory.append(a2_transformation[i] + a2_trajectory[len(a2_trajectory) - 1])
-#print x_trajectory
+    a_trajectory.append(a_transformation[i] + a_trajectory[len(a_trajectory) - 1])
+    s_trajectory.append(s_transformation[i] * s_trajectory[len(s_trajectory) - 1])
 
 #Smooth the trajectory
 radius = 30
+sum_x = 0
+sum_y = 0
+sum_a = 0
+sum_s = 0
+count = 0
+# Initialize sums
+for i in range(0, radius-1):
+    if(i < len(x_trajectory)):
+        sum_x = sum_x + x_trajectory[i]
+        sum_y = sum_y + y_trajectory[i]
+        sum_a = sum_a + a_trajectory[i]
+        sum_s = sum_s + s_trajectory[i]
+        count = count + 1
+
 for i in range(0, len(x_trajectory)):
-    sum_x = 0
-    sum_y = 0
-    sum_a1 = 0
-    sum_a2 = 0
-    count = 0
-
-    for j in range(-radius, radius):
-        if(i+j >= 0 and i+j < len(x_trajectory)):
-            sum_x = sum_x + x_trajectory[i+j]
-            sum_y = sum_y + y_trajectory[i+j]
-            sum_a1 = sum_a1 + a1_trajectory[i + j]
-            sum_a2 = sum_a2 + a2_trajectory[i + j]
-
-            count = count + 1
+    if (i + radius < len(x_trajectory)):
+        sum_x = sum_x + x_trajectory[i+radius]
+        sum_y = sum_y + y_trajectory[i+radius]
+        sum_a = sum_a + a_trajectory[i+radius]
+        sum_s = sum_s + s_trajectory[i+radius]
+        count = count + 1
+    
+    if (i - radius >= 0):
+        sum_x = sum_x - x_trajectory[i-radius]
+        sum_y = sum_y - y_trajectory[i-radius]
+        sum_a = sum_a - a_trajectory[i-radius]
+        sum_s = sum_s - s_trajectory[i-radius]
+        count = count - 1
 
     smoothed_x_trajectory.append(sum_x / count)
     smoothed_y_trajectory.append(sum_y / count)
-    smoothed_a1_trajectory.append(sum_a1 / count)
-    smoothed_a2_trajectory.append(sum_a2 / count)
+    smoothed_a_trajectory.append(sum_a / count)
+    smoothed_s_trajectory.append(sum_s / count)
 
-cap.release()
-
-#print x_transformation
-#print x_trajectory
-#print smoothed_x_trajectory
-#print len(a1_trajectory)
-#print a1_trajectory.append
-print
-print len(smoothed_a1_trajectory)
-print smoothed_a1_trajectory.append
-
-cap = cv2.VideoCapture('shaky4.mp4')
-ret, frame1 = cap.read()
-out_smooth.write(frame1)
+# Second pass
+cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 for frame_num in range(0, len(smoothed_x_trajectory)):
-    ret, frame2 = cap.read()
-    if ret == True:
-        # Translate the image
-        #M = np.float32([[1, 0, smoothed_x_trajectory[frame_num] - x_trajectory[frame_num]],[0, 1, smoothed_y_trajectory[frame_num] - y_trajectory[frame_num]]])
-        #M = np.float32([[1, 0, x_transformation[frame_num]+smoothed_x_trajectory[frame_num]-x_trajectory[frame_num]], [0, 1, y_transformation[frame_num]+smoothed_y_trajectory[frame_num]-y_trajectory[frame_num]]])
-        #M = np.float32([[1, 0, smoothed_x_trajectory[frame_num]],[0, 1, smoothed_y_trajectory[frame_num]]])
-        M = np.float32([[(a1_trajectory[frame_num] - smoothed_a1_trajectory[frame_num])*2, (a2_trajectory[frame_num] - smoothed_a2_trajectory[frame_num])*2, x_trajectory[frame_num] - smoothed_x_trajectory[frame_num]],[(-a2_trajectory[frame_num] + smoothed_a2_trajectory[frame_num])*2, (a1_trajectory[frame_num] - smoothed_a1_trajectory[frame_num])*2, y_trajectory[frame_num] - smoothed_y_trajectory[frame_num]]])
-        frame2_trans = cv2.warpAffine(frame2, M, (width, height))
-
-        # Draw circles
-        '''
-        print "start"
-        frame2_trans_BW = cv2.cvtColor(frame2_trans, cv2.COLOR_BGR2GRAY)
-        corner = cv2.goodFeaturesToTrack(frame2_trans_BW, 200, 0.01, 30)
-        if corner != None:
-            print corner
-            for x in corner:
-                cv2.circle(frame2_trans, corner[x], 5, (0, 0, 255), 2)
-        '''
-        # Write the translated image to output video
-        out_smooth.write(frame2_trans)
-
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-    else:
+    ret, frame = cap.read()
+    if not ret:
         break
-cv2.waitKey()
+    dx = smoothed_x_trajectory[frame_num] - x_trajectory[frame_num]
+    dy = smoothed_y_trajectory[frame_num] - y_trajectory[frame_num]
+    da = smoothed_a_trajectory[frame_num] - a_trajectory[frame_num]
+    ds = smoothed_s_trajectory[frame_num] / s_trajectory[frame_num]
+
+    x = dx + x_transformation[frame_num]
+    y = dy + y_transformation[frame_num]
+    a = da + a_transformation[frame_num]
+    s = ds * s_transformation[frame_num]
+    
+    cos = math.cos(a)
+    sin = math.sin(a)
+    M = np.float32([
+        [
+            s * cos,
+            -s * sin,
+            x
+        ],
+        [
+            s * sin, 
+            s * cos, 
+            y
+        ]
+    ])
+    frame_trans = cv2.warpAffine(frame, M, (width, height))
+
+    # Draw circles
+    '''
+    print "start"
+    frame2_trans_BW = cv2.cvtColor(frame2_trans, cv2.COLOR_BGR2GRAY)
+    corner = cv2.goodFeaturesToTrack(frame2_trans_BW, 200, 0.01, 30)
+    if corner != None:
+        print corner
+        for x in corner:
+            cv2.circle(frame2_trans, corner[x], 5, (0, 0, 255), 2)
+    '''
+    # Write the translated image to output video
+    out_smooth.write(frame_trans)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+    print(frame_num , " frames written.")
+#cv2.waitKey()
 # When everything done, release the capture
 cap.release()
 #out_raw.release()
